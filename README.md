@@ -3,8 +3,8 @@
 Four game-tree search strategies (greedy, minimax, alpha-beta, and parallel
 versions of both with pthreads) for **Blobwar**, a territory-capture board
 game in the spirit of Atax/Ataxx: two players place and jump blobs on an 8x8
-board, capturing every enemy blob adjacent to the destination square.
-
+board. Moving one cell clones a blob, moving two cells jumps it, and any
+enemy blob adjacent to the landing square flips to the mover's color.
 
 ## What this project is
 
@@ -12,52 +12,37 @@ The game itself (board, SDL rendering, rules, networking) was the base code
 provided for the course. **The AI in `strategy.cc` is the part implemented
 here**: given a board position, it searches the game tree and picks a move.
 
-| Strategy | Idea | Depth |
-| --- | --- | --- |
-| Greedy | Play the move that maximizes the immediate score | 1 |
-| Minimax | Explore the full game tree, assuming the opponent plays optimally against you | 4 |
-| Alpha-beta | Minimax with branches pruned once they can no longer change the result | 6 |
-| Parallel minimax / alpha-beta | Same search, one pthread per root move, run in batches of 4 | same depths |
+## How the AI works
 
-The evaluation function is simple material count: `(my blobs) - (opponent's
-blobs)`.
+- **Evaluation function**: simple material count, `(my blobs) - (opponent's
+  blobs)`, computed from the point of view of the player the search is
+  running for.
+- **Greedy** (`computeBestMoveGreedy`): looks one move ahead and plays
+  whichever move maximizes the immediate score. Fast but short-sighted,
+  used as a baseline and as a quick move generator for comparison.
+- **Minimax** (`computeBestMoveMinimax`, depth 4): explores the full game
+  tree down to a fixed depth, alternating a maximizing level (my best move)
+  and a minimizing level (assuming the opponent plays their best response
+  against me), and backs the score up to the root.
+- **Alpha-beta** (`computeBestMoveAlphaBeta`, depth 6): the same search as
+  minimax, but carries an `[alpha, beta]` window down the recursion and cuts
+  a branch as soon as it proves it can no longer change the result. This
+  lets it search two levels deeper than plain minimax for the same cost.
+- **Parallel minimax / alpha-beta** (`computeBestMoveParallelMinimax`,
+  `computeBestMoveParallelAlphaBeta`): the root's possible moves are
+  independent sub-searches, so they're split across pthreads in batches of
+  `NB_THREADS = 4`, each thread running the sequential search on its own
+  copy of the board. `computeBestMove()` uses parallel alpha-beta by
+  default.
+- **Move classification**: `applyMove` tells a clone from a jump by the
+  Chebyshev distance between the origin and destination cell (`dist == 1`
+  keeps the source blob, `dist > 1` empties it), then flips every adjacent
+  enemy blob to apply the capture rule.
 
-## A bug this project fixes: scoring from the wrong player
-
-The leaf evaluation must always be computed **from the point of view of the
-player the search was started for** (call it the root player), not from
-whoever's turn it happens to be at that leaf. This matters because a branch
-can end early: if a player runs out of legal moves (boxed in), the search
-stops there immediately, before reaching the intended depth, and that
-premature leaf can belong to either player depending on the path taken.
-
-The original code scored every leaf from `_current_player`'s point of view,
-which flips at every ply. Nodes that stopped early because a player was
-boxed in ended up scored from a different player's perspective than nodes
-that reached the depth limit normally, silently flipping the sign of the
-evaluation for that branch.
-
-Concrete repro (`strategy.cc`'s own evaluation, used directly, see the test
-below): a position where player 0 has 9 blobs against player 1's single
-blob, fully boxed into a corner. From player 0's point of view this is
-obviously winning. A 2-ply search:
-
-```
-Original code:  minimax(depth=2) = 2
-Fixed code:     minimax(depth=2) = 9   (correct: 9 blobs vs 1, heavily in player 0's favor)
-```
-
-The fix adds a `_root_player` field, set once when the search starts and
-carried unchanged through every recursive copy, and scores every leaf
-against it instead of against `_current_player`:
-
-```cpp
-// Before: flips meaning depending on whose turn it is at this node
-if (c == (Sint16)_current_player) score += 1;
-
-// After: always scored from the player the search is being run for
-if (c == (Sint16)_root_player) score += 1;
-```
+While working on this I found and fixed a scoring bug in the shared
+minimax/alpha-beta base case (a leaf could be evaluated from the wrong
+player's point of view when a branch ended early because a player ran out
+of legal moves); see `tests/` for the regression test that catches it.
 
 ## Build
 
