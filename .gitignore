@@ -1,0 +1,10 @@
+*.o
+blobwar
+launchStrategy
+server/blobwar_server
+core
+*~
+doc/
+.vscode/
+.envrc
+shell.nix
